@@ -67,7 +67,8 @@ from transformers import WhisperModel
 AVATAR_IMAGE = os.getenv("AVATAR_IMAGE", "/workspace/avatar.jpg")
 GPU_ID = int(os.getenv("GPU_ID", "0"))
 FPS = int(os.getenv("AVATAR_FPS", "25"))
-BATCH_SIZE = int(os.getenv("MUSETALK_BATCH_SIZE", "40"))  # L4 has ~17GB free after model load
+BATCH_SIZE = int(os.getenv("MUSETALK_BATCH_SIZE", "20"))  # tuned for L4 with Whisper on separate GPU
+WHISPER_GPU_ID = int(os.getenv("WHISPER_GPU_ID", "1"))  # offload Whisper to GPU 1
 VERSION = os.getenv("MUSETALK_VERSION", "v15")
 EXTRA_MARGIN = int(os.getenv("EXTRA_MARGIN", "10"))
 PARSING_MODE = os.getenv("PARSING_MODE", "jaw")
@@ -84,6 +85,7 @@ logging.basicConfig(
 
 # ── Global state ──────────────────────────────────────────────────────────────
 device = None
+whisper_device = None  # separate GPU for Whisper
 vae = None
 unet = None
 pe = None
@@ -389,13 +391,13 @@ def _load_avatar_cache(cache_dir: str):
 
 @torch.no_grad()
 def _extract_audio_features(audio_path: str):
-    """Extract whisper features from audio file."""
+    """Extract whisper features from audio file. Runs on whisper_device (GPU 1)."""
     whisper_input_features, librosa_length = audio_processor.get_audio_feature(
         audio_path, weight_dtype=weight_dtype
     )
     whisper_chunks = audio_processor.get_whisper_chunk(
         whisper_input_features,
-        device,
+        whisper_device,  # Whisper runs on its own GPU
         weight_dtype,
         whisper,
         librosa_length,
@@ -629,8 +631,11 @@ def frames_to_rgba_bytes(frames: list[np.ndarray]) -> bytes:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Load models and prepare avatar at startup."""
-    global device, vae, unet, pe, whisper, audio_processor
+    global device, whisper_device, vae, unet, pe, whisper, audio_processor
     global weight_dtype, timesteps, fp
+
+    # Reduce OOM from memory fragmentation
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
     logger.info("=" * 60)
     logger.info("MuseTalk Real-Time Server v3 — Starting up")
@@ -667,15 +672,16 @@ async def lifespan(app: FastAPI):
 
     logger.info(f"Models loaded in {time.time() - t0:.1f}s")
 
-    # Load Whisper
+    # Load Whisper on separate GPU to free VRAM for UNet+VAE batches
     t0 = time.time()
     whisper_dir = os.path.join("models", "whisper")
-    logger.info(f"Loading Whisper from {whisper_dir}...")
+    whisper_device = torch.device(f"cuda:{WHISPER_GPU_ID}")
+    logger.info(f"Loading Whisper from {whisper_dir} on {whisper_device}...")
     audio_processor = AudioProcessor(feature_extractor_path=whisper_dir)
     whisper = WhisperModel.from_pretrained(whisper_dir)
-    whisper = whisper.to(device=device, dtype=weight_dtype).eval()
+    whisper = whisper.to(device=whisper_device, dtype=weight_dtype).eval()
     whisper.requires_grad_(False)
-    logger.info(f"Whisper loaded in {time.time() - t0:.1f}s")
+    logger.info(f"Whisper loaded in {time.time() - t0:.1f}s on {whisper_device}")
 
     # Face parser
     fp = FaceParsing()
