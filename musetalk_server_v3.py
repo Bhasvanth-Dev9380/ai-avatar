@@ -67,7 +67,7 @@ from transformers import WhisperModel
 AVATAR_IMAGE = os.getenv("AVATAR_IMAGE", "/workspace/avatar.jpg")
 GPU_ID = int(os.getenv("GPU_ID", "0"))
 FPS = int(os.getenv("AVATAR_FPS", "25"))
-BATCH_SIZE = int(os.getenv("MUSETALK_BATCH_SIZE", "8"))  # keep small to avoid OOM on L4 (21GB after model load)
+BATCH_SIZE = int(os.getenv("MUSETALK_BATCH_SIZE", "16"))  # balanced for L4 (21GB VRAM after model load)
 VERSION = os.getenv("MUSETALK_VERSION", "v15")
 EXTRA_MARGIN = int(os.getenv("EXTRA_MARGIN", "10"))
 PARSING_MODE = os.getenv("PARSING_MODE", "jaw")
@@ -687,10 +687,38 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning(f"Avatar image not found: {AVATAR_IMAGE}")
 
+    # Free fragmented GPU memory before inference
+    torch.cuda.empty_cache()
+    logger.info(f"GPU memory after models: "
+                f"{torch.cuda.memory_allocated(device)/1e9:.1f}GB allocated, "
+                f"{torch.cuda.memory_reserved(device)/1e9:.1f}GB reserved")
+
     # Warmup GPU (first inference is slower)
     if avatar_ready and input_latent_list_cycle:
-        logger.info("GPU warmup...")
+        logger.info("GPU warmup (UNet + Whisper)...")
         t0 = time.time()
+
+        # Warm up Whisper with a short dummy audio
+        import wave as _wave
+        _wbuf = io.BytesIO()
+        with _wave.open(_wbuf, "wb") as _wf:
+            _wf.setnchannels(1)
+            _wf.setsampwidth(2)
+            _wf.setframerate(16000)
+            _wf.writeframes(b"\x00\x00" * 8000)  # 0.5s silence
+        _tmp_wav = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        _tmp_wav.write(_wbuf.getvalue())
+        _tmp_wav.close()
+        try:
+            _extract_audio_features(_tmp_wav.name)
+        except Exception:
+            pass
+        finally:
+            os.unlink(_tmp_wav.name)
+        logger.info(f"  Whisper warm: {(time.time() - t0)*1000:.0f}ms")
+
+        # Warm up UNet + VAE
+        t1 = time.time()
         dummy_whisper = torch.randn(1, 1, 384, device=device, dtype=weight_dtype)
         # Latent is already (1, C, H, W) from vae.get_latents_for_unet
         dummy_latent = input_latent_list_cycle[0].to(
@@ -700,6 +728,8 @@ async def lifespan(app: FastAPI):
         af = pe(dummy_whisper)
         _ = unet.model(dummy_latent, timesteps, encoder_hidden_states=af).sample
         torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+        logger.info(f"  UNet warm: {(time.time() - t1)*1000:.0f}ms")
         logger.info(f"GPU warmup done in {time.time() - t0:.1f}s")
 
     logger.info("=" * 60)
