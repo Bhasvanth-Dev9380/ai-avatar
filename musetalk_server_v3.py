@@ -67,7 +67,7 @@ from transformers import WhisperModel
 AVATAR_IMAGE = os.getenv("AVATAR_IMAGE", "/workspace/avatar.jpg")
 GPU_ID = int(os.getenv("GPU_ID", "0"))
 FPS = int(os.getenv("AVATAR_FPS", "25"))
-BATCH_SIZE = int(os.getenv("MUSETALK_BATCH_SIZE", "50"))  # v3: large batch
+BATCH_SIZE = int(os.getenv("MUSETALK_BATCH_SIZE", "8"))  # keep small to avoid OOM on L4 (21GB after model load)
 VERSION = os.getenv("MUSETALK_VERSION", "v15")
 EXTRA_MARGIN = int(os.getenv("EXTRA_MARGIN", "10"))
 PARSING_MODE = os.getenv("PARSING_MODE", "jaw")
