@@ -1,0 +1,23 @@
+# LiveKit agent (audio + video)
+livekit==1.0.25
+livekit-agents[openai,assemblyai]==1.2.18
+livekit-plugins-openai==1.2.18
+livekit-plugins-assemblyai==1.2.18
+
+# MuseTalk server
+fastapi
+uvicorn[standard]
+aiofiles
+
+# HTTP client
+httpx
+
+# Video frame processing
+opencv-python-headless
+numpy
+
+# Audio conversion
+scipy
+
+# Config
+python-dotenv
