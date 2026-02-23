@@ -53,6 +53,16 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 import cv2
 import numpy as np
 import torch
+
+# PyTorch 2.8+ defaults torch.load(weights_only=True) which breaks many
+# checkpoints (mmengine, DWPose, etc) that contain numpy objects.
+# Monkeypatch to restore the old behavior for compatibility.
+_orig_torch_load = torch.load
+def _compat_torch_load(*args, **kwargs):
+    kwargs.setdefault("weights_only", False)
+    return _orig_torch_load(*args, **kwargs)
+torch.load = _compat_torch_load
+
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import Response, StreamingResponse
 
